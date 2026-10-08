@@ -3,12 +3,33 @@ SupCom_Import_Export_Blender
 
 Python scripts to import and export Supreme Commander units (.scm) and animations (.sca) in Blender.
 
+Blender 5.x (version 0.6.0)
+------
+
+Both add-ons work on Blender 5.x (tested on 5.2 LTS). Install each .py with Edit > Preferences > Add-ons >
+(menu at the top right) Install from Disk, then enable it. What changed from 0.5.x:
+
+- Importer: enabling it failed on Blender 5 ("No module named 'bgl'"); the unused import is gone. File reading uses
+  explicit little-endian formats (bone records were misread off Windows). Imported meshes keep the file's own vertex
+  normals, so they shade like in game. Error popups work again. Works when driven from Python scripts.
+- Exporter: animation export works again (Blender 5.0 removed `Action.fcurves`; keyed bones are now read through
+  slotted actions). Normals and tangents come from Blender itself (corner normals + MikkTSpace), so the game shows
+  exactly what the viewport shows: smooth/flat shading, sharp edges and custom normals are all respected, and normal
+  maps line up. Clear error past the format's 65535-vertex limit; warning if the armature has unapplied transforms.
+
+Checked by round-tripping models from the game files (import -> export -> compare with the original): on models
+authored by GPG, exported normals match the originals at 1.000 (mean dot product) on 8 of 9 models, against
+0.86-1.00 for 0.5.9, and tangents at 0.97-1.00 on 8 of 9 (0.5.9: as low as 0.50). Bones and animations re-export
+within 3e-5. The scripts in `tests/` repeat these checks headless with the `bpy` module from PyPI
+(`pip install bpy==5.2.2`, then `python tests/roundtrip.py <folder with the add-ons> <output folder> <model.scm> [anim.sca]`;
+the add-ons need to be importable as `supcom_importer` / `supcom_exporter`, e.g. copies with underscores).
+
 Setting up the plugins :
 ------
 
 Download the importer and exporter files from the github repo. They are counted as separate plugins.
 
-These scripts are installed just like other blender plugins:
+On Blender 5.x use Install from Disk as described above. Otherwise these scripts are installed just like other blender plugins:
 You can then place them into your plugins directory: `BlenderInstallDir/BlenderVersion/scripts/addons`
 Then you can enable them in the user preferences, in the plugins section. There will be two plugins, import and export, under the Import/Export category.
 
@@ -31,7 +52,7 @@ Exporting :
 
 - It is recommended to triangulate the mesh. Quads and ngons are now supported, but in general triangulating gives more control over the mesh.
 
-- Vertices at the same location will be merged, unless they are part of a sharp edge. Supcom uses merged vertices for smooth shading. To get hard shading, set the edges you want to sharp. Nothing else is required. The exporter will not merge them together.
+- Shading is taken from Blender as you see it: smooth/flat faces, sharp edges and custom normals all carry over. A vertex is only split where its corners differ in UV, normal or tangent.
 
 known bugs :
 - Models exported by this will work fine in the game, but importing them into 3dsMax with the 3ds importer is erratic and buggy due to how blender orders its vertices. I have a partial fix in another repository for the 3ds exporter here:

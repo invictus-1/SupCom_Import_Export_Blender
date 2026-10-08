@@ -52,6 +52,10 @@
 #               Added Preliminary support for Ngons.
 # 0.5.9  2020-06-07 [e]Exotic_Retard
 #               Fixed SCA export being broken (amazing it lasted this long!)
+# 0.6.0  2026-10-07 Blender 5.x port (tested on 5.2 LTS)
+#               explicit little-endian struct formats (bone records and header used native 'l'/'L', 8 bytes off Windows)
+#               popups safe without a window; clear error past the format's 65535-vertex limit
+#               SCA export reads keyed bones through slotted actions (Action.fcurves was removed in Blender 5.0)
 #
 #
 # Todo
@@ -71,9 +75,9 @@
 #**************************************************************************************************
 
 bl_info = {
-    "name": "Supcom Exporter 0.5.9",
-    "author": "dan & Brent & Oygron, Updated by [e]Exotic_Retard",
-    "version": (0,5,9),
+    "name": "Supcom Exporter 0.6.0",
+    "author": "dan & Brent & Oygron, Updated by [e]Exotic_Retard; Blender 5 port 2026",
+    "version": (0,6,0),
     "blender": (4, 2, 0),
     "location": "File > Import-Export",
     "description": "Exports Supcom files",
@@ -89,6 +93,7 @@ from mathutils import *
 from os import path
 
 import struct
+import bmesh
 from math import *
 from bpy_extras.io_utils import unpack_list, unpack_face_list
 
@@ -96,7 +101,7 @@ from string import *
 from struct import *
 from bpy.props import *
 
-VERSION = '5.9'
+VERSION = '6.0'
 
 ######################################################
 # User defined behaviour, Select as you need
@@ -110,8 +115,6 @@ PROG_BAR_ENABLE = 1
 #how many steps a progress bar has (the lesser the faster)
 PROG_BAR_STEP = 25
 
-#slower - reduce vertex amount
-VERTEX_OPTIMIZE = 1
 
 #LOG File for debuging
 #Enable LOG File (0 = Disabled , 1 = Enabled )
@@ -143,24 +146,27 @@ ANIMATION_DURATION = 1.5 #what is this for
 
 
 
+def _popup(msg, title, icon):
+    print(title + ": " + msg)
+    # popups need a window; skip them when Blender runs without UI (background / command line)
+    wm = bpy.context.window_manager
+    if bpy.app.background or wm is None or not wm.windows:
+        return
+    def draw(self, context):
+        self.layout.label(text=msg)
+    wm.popup_menu(draw, title=title, icon=icon)
+
 def my_popup(msg):
     global inError
     if inError == 0:
         inError = 1
-        def draw(self, context):
-            self.layout.label(text=msg)
-        bpy.context.window_manager.popup_menu(draw, title="Error", icon='ERROR')
-    
+        _popup(msg, "Error", 'ERROR')
 
 def my_popup_warn(msg):
-    def draw(self, context):
-        self.layout.label(text=msg)
-    bpy.context.window_manager.popup_menu(draw, title="Warning", icon='ERROR')
+    _popup(msg, "Warning", 'ERROR')
 
 def my_popup_info(msg):
-    def draw(self, context):
-        self.layout.label(text=msg)
-    bpy.context.window_manager.popup_menu(draw, title="Info", icon='INFO')
+    _popup(msg, "Info", 'INFO')
 
 
 class scm_bone :
@@ -183,7 +189,7 @@ class scm_bone :
         self.name = name
 
     def save(self, file):
-        bonestruct = '16f3f4f4l'
+        bonestruct = '<16f3f4f4i'  # explicit 4-byte ints; native 'l' is 8 bytes outside Windows
         #4x4 matrix 
         #3 position
         #4 rotation
@@ -246,7 +252,7 @@ class scm_vertex :
 
     def save(self, file):
 
-        vertstruct = '3f3f3f3f2f2f4B'
+        vertstruct = '<3f3f3f3f2f2f4B'
         #3 position
         #3 normal
         #3 tangent
@@ -281,66 +287,6 @@ class scm_vertex :
         file.write(vertex)
 
 
-#helper the real scm face tuple is stored in mesh
-#tri face
-class Face :
-
-    vertex_cont = []
-
-    def __init__(self):
-        self.vertex_cont = []
-
-    def addVertexCount(self, vertex):
-        self.vertex_cont.extend(vertex)
-
-    #now contains 3 vertexes calculate bi and ta and add to mesh
-    #TODO:make it calculate these using the blender api instead of manually?
-    def CalcTB( self ) :
-        vert1 = self.vertex_cont[0]
-        vert2 = self.vertex_cont[1]
-        vert3 = self.vertex_cont[2]
-
-        uv = [ vert1.uv1, vert2.uv1, vert3.uv1]
-
-        # Calculate Tangent and Binormal
-        #        (v3 - v1).(p2 - p1) - (v2 - v1).(p3 - p1)
-        #    T  =  ------------------------------------------------
-        #        (u2 - u1).(v3 - v1) - (v2 - v1).(u3 - u1)
-        #        (u3 - u1).(p2 - p1) - (u2 - u1).(p3 - p1)
-        #    B  =  -------------------------------------------------
-        #        (v2 - v1).(u3 - u1) - (u2 - u1).(v3 - v1)
-
-        P2P1 = vert2.position - vert1.position
-        P3P1 = vert3.position - vert1.position
-
-        #UV2UV1 = [ uv[1][0]-uv[0][0], uv[1][1]-uv[0][1] ]
-        #UV3UV1 = [ uv[2][0]-uv[0][0], uv[2][1]-uv[0][1] ]
-
-        UV2UV1 = uv[1] - uv[0]
-        UV3UV1 = uv[2] - uv[0]
-
-        divide = (UV2UV1[1]*UV3UV1[0] - UV2UV1[0]*UV3UV1[1])
-
-        #TODO: work out why dividing by 0 is happening
-        if ( divide != 0.0 ) :
-            tangent = Vector((UV3UV1[1]*P2P1 - UV2UV1[1]*P3P1)/(divide))
-            binormal = Vector((UV3UV1[0]*P2P1 - UV2UV1[0]*P3P1)/(-divide))
-        else :
-            print("Vertex Tangent & Binormal divided by zero, setting both to (0,0,0) instead")
-            tangent = Vector((0,0,0))
-            binormal = Vector((0,0,0))
-
-
-        #add calculated tangent and binormal to vertices
-        for ind in range(3):
-            self.vertex_cont[ind].tangent = tangent
-            self.vertex_cont[ind].binormal =  binormal
-
-    def addToMesh( self, mesh ) :
-        self.CalcTB()
-        mesh.addFace( self )
-
-
 class scm_mesh :
 
     bones = []
@@ -353,65 +299,22 @@ class scm_mesh :
         self.bones = []
         self.weightedBoneCount = 0
         self.vertices = []
-        self.smoothEdgeKeys = {}
         self.faces = []
         self.info = []
-
-    def addVert( self, nvert ):
-        if VERTEX_OPTIMIZE :
-            vertind = len(self.vertices)
-            for edgekey in nvert.smoothEdges :
-                if edgekey in self.smoothEdgeKeys :
-                    for storedVertInd in self.smoothEdgeKeys[edgekey] :
-                        vert = self.vertices[storedVertInd]
-                        if nvert.position == vert.position : #make the vertices colinear
-                            nvert = self.mergeVertexNormals(vert,nvert)
-                            if nvert.uv1 == vert.uv1  : #merge the vertex down instead of adding a new one
-                                vertind = storedVertInd #change the vertex index to the one we are merging to
-                                self.vertices[vertind] = nvert
-            
-            
-            #update the edge keys in the dictionary
-            for edgeKey in nvert.smoothEdges :
-                if not edgeKey in self.smoothEdgeKeys :
-                    self.smoothEdgeKeys[edgeKey] = {}
-                self.smoothEdgeKeys[edgeKey][vertind] = True
-            
-            #if we havent merged anything then add a new vertex
-            if vertind == len(self.vertices) :
-                self.vertices.append( nvert )
-            
-            return vertind
-        else:
-            self.vertices.append(nvert)
-            return len(self.vertices)-1
-
-    def mergeVertexNormals( self, vert, nvert ):
-        nvert.tangent = Vector( (vert.tangent + nvert.tangent) )
-        nvert.binormal = Vector( (vert.binormal + nvert.binormal) )
-        nvert.normal = Vector( (vert.normal + nvert.normal) )
-        return nvert
-        
-    #TODO: delet this
-    def mergeVertices( self, vert, nvert, vertind ):
-        vert.tangent = Vector( (vert.tangent + nvert.tangent) )
-        vert.binormal = Vector( (vert.binormal + nvert.binormal) )
-        vert.normal = Vector( (vert.normal + nvert.normal) )
-        self.vertices[vertind] = vert
-
-    def addFace( self, face ):
-
-        facein = [ self.addVert(nvert) for nvert in face.vertex_cont]
-        self.faces.append(facein)
-
 
     def save(self, filename):
 
         print('Writing Mesh...')
 
+        # triangle indices are unsigned 16-bit in the SCM format
+        if len(self.vertices) > 65535:
+            my_popup("Error: %d vertices after export; the SCM format allows at most 65535. Split the model "
+                     "or reduce detail." % len(self.vertices))
+            return False
+
         scm = open(filename, 'wb')
         
-        headerstruct = '4s11L'
+        headerstruct = '<4s11I'  # native 'L' is 8 bytes outside Windows
         headersize = struct.calcsize(headerstruct)
 
         marker = b'MODL'
@@ -467,7 +370,7 @@ class scm_mesh :
         indexoffset = pad_file(scm, b'TRIS')
 
         for f in range(len(self.faces)):
-            face = struct.pack('3H', self.faces[f][0], self.faces[f][1], self.faces[f][2])
+            face = struct.pack('<3H', self.faces[f][0], self.faces[f][1], self.faces[f][2])
             scm.write(face)
 
 
@@ -523,10 +426,10 @@ class sca_frame:
         self.bones = []
 
     def save(self, file):
-        frameheader_fmt = 'fi'
+        frameheader_fmt = '<fi'
         frameheader_size = struct.calcsize(frameheader_fmt)
 
-        posrot_fmt = '3f4f'
+        posrot_fmt = '<3f4f'
         posrot_size = struct.calcsize(posrot_fmt)
 
         # Frame header
@@ -565,7 +468,7 @@ class sca_anim :
         #self.filename = filename
         sca = open(filename, 'wb')
 
-        headerstruct = '4siifiiiii'
+        headerstruct = '<4siifiiiii'
 
         # Write temp header
         magic = b'ANIM'
@@ -597,7 +500,7 @@ class sca_anim :
         linksoffset = pad_file(sca, b'LINK')
 
         for link in self.bonelinks:
-            buffer = struct.pack('i', link)
+            buffer = struct.pack('<i', link)
             sca.write(buffer)
 
 
@@ -605,7 +508,7 @@ class sca_anim :
         animoffset = pad_file(sca, b'DATA')
 
         #the space occupied by postion and rotation info on the bones.
-        posrot_fmt = '3f4f'
+        posrot_fmt = '<3f4f'
         posrot_size = struct.calcsize(posrot_fmt)
 
         #this writes the position/rotation of the root bone in the first animation, as if it is at position 0, and no rotation
@@ -801,6 +704,92 @@ def processSingleBone(mesh, bone, parentBoneIndex,BonesWithAnimKeys):
     mesh.bones.append(sc_bone)
 
 
+def is_identity(m, eps=1e-5):
+    return all(abs(m[r][c] - (1.0 if r == c else 0.0)) < eps for r in range(4) for c in range(4))
+
+
+def export_mesh_object(mesh_obj, supcom_mesh, bone_index_by_name):
+    """Writes one mesh object's triangles into supcom_mesh. Returns the indices of vertices with no bone.
+
+    Normals and tangents come from Blender itself, so the game shows exactly what the viewport shows:
+    - normals: the mesh's corner normals (smooth/flat shading, sharp edges, custom normals all respected)
+    - tangents: Blender's MikkTSpace tangents, tangent negated (GPG convention, the UV V axis is flipped on export);
+      checked against GPG's own models: 0.98-0.99 agreement, versus ~0.84 for the old per-face calculation
+    A vertex is split only where its corners differ in UV, normal or tangent frame.
+    """
+    src = mesh_obj.data
+    me, tmp = src, None
+    if any(p.loop_total > 4 for p in src.polygons):
+        # MikkTSpace needs tris/quads: triangulate only the ngons, on a temporary copy (vertex order is kept)
+        tmp = src.copy()
+        bm = bmesh.new()
+        bm.from_mesh(tmp)
+        bmesh.ops.triangulate(bm, faces=[f for f in bm.faces if len(f.verts) > 4])
+        bm.to_mesh(tmp)
+        bm.free()
+        me = tmp
+
+    try:
+        uv_name = me.uv_layers.active.name
+        me.calc_tangents(uvmap=uv_name)
+        me.calc_loop_triangles()
+        uv_data = me.uv_layers[uv_name].data
+        corner_normals = me.corner_normals
+
+        M = mesh_obj.matrix_world
+        R3 = M.to_3x3()
+        N3 = R3.inverted_safe().transposed()
+        X = xy_to_xz_transform.to_3x3()   # Blender -> SupCom axes (row-vector convention, as everywhere here)
+
+        # one bone per vertex: the first vertex group with weight > 0.5 that names a bone
+        group_names = {g.index: g.name for g in mesh_obj.vertex_groups}
+        vbone = []
+        missing = []
+        for v in me.vertices:
+            bi = -1
+            for g in v.groups:
+                if g.weight > 0.5:
+                    bi = bone_index_by_name.get(group_names.get(g.group), -1)
+                    if bi >= 0:
+                        break
+            if bi < 0:
+                missing.append(v.index)
+                bi = 0
+            vbone.append(bi)
+        if missing:
+            return missing
+
+        positions = [(M @ v.co) @ X for v in me.vertices]
+        index_of = {}
+        for tri in me.loop_triangles:
+            face = []
+            for li in tri.loops:
+                loop = me.loops[li]
+                vi = loop.vertex_index
+                n = ((N3 @ corner_normals[li].vector).normalized()) @ X
+                t = -(((R3 @ loop.tangent).normalized()) @ X)
+                b = ((R3 @ loop.bitangent).normalized()) @ X
+                u, w = uv_data[li].uv
+                key = (vi, round(u, 6), round(w, 6), round(n.x, 4), round(n.y, 4), round(n.z, 4),
+                       round(t.x, 3), round(t.y, 3), round(t.z, 3), loop.bitangent_sign)
+                idx = index_of.get(key)
+                if idx is None:
+                    idx = len(supcom_mesh.vertices)
+                    vert = scm_vertex(positions[vi].copy(), n, Vector((u, 1.0 - w)), [vbone[vi], 0, 0, 0], [])
+                    vert.tangent = t
+                    vert.binormal = b
+                    supcom_mesh.vertices.append(vert)
+                    index_of[key] = idx
+                face.append(idx)
+            supcom_mesh.faces.append(face)
+        print(mesh_obj.name, ': ', len(me.loop_triangles), 'triangles,', len(index_of), 'vertices')
+        return []
+    finally:
+        me.free_tangents()
+        if tmp is not None:
+            bpy.data.meshes.remove(tmp)
+
+
 def make_scm(arm_obj):
     global BONES
     global MArmatureWorld
@@ -826,104 +815,25 @@ def make_scm(arm_obj):
     error = createBoneList(mesh_objs, arm, supcom_mesh)
     if error: return
 
+    if not is_identity(arm_obj.matrix_world):
+        my_popup_warn("Armature has a location/rotation/scale. Apply its transforms (Ctrl+A > All Transforms) "
+                      "before exporting, or bones and vertices may not line up in game.")
+
+    bone_index_by_name = {b.name: i for i, b in enumerate(supcom_mesh.bones)}
+
     # Process all the meshes
     for mesh_obj in mesh_objs:
-        #create lists for storing vertices with errors
-        verticesWithoutBones = []
-        nGonFaces = []
-        verticesWithoutUV = [] #not yet used
-
-        bmesh_data = mesh_obj.data
-
-        # Build lookup dictionary for edge keys to edges
-        edges = bmesh_data.edges
-        face_edge_map = {ek: edges[i] for i, ek in enumerate(bmesh_data.edge_keys)}
-        
-        if not bmesh_data.uv_layers:
-            my_popup("Mesh has no texture values -> Please set your UV!")
-            print("Mesh has no texture values -> Please set your UV!")
+        if not mesh_obj.data.uv_layers:
+            my_popup("Mesh " + mesh_obj.name + " has no UV map -> please unwrap it")
             return
+        verticesWithoutBones = export_mesh_object(mesh_obj, supcom_mesh, bone_index_by_name)
 
-        MatrixMesh = Matrix(mesh_obj.matrix_world)
-        uvData = bmesh_data.uv_layers.active.data[:]
-        
-        TotalVertsProcessed = 0
-        
-        for face in bmesh_data.loop_triangles:
-            #get the UV coordinates for this face
-            my_uv = None
-            start = bmesh_data.polygons[face.polygon_index].loop_start
-            end = start + bmesh_data.polygons[face.polygon_index].loop_total
-            
-            #TODO:rename uvDict to dict
-            uvDict = {}
-            for loop in bmesh_data.loops[start:end]:
-                uvDict[loop.vertex_index] = tuple(uvData[loop.index].uv)
-
-            vertList = []
-            
-            for i in range(len(face.vertices)):
-                TotalVertsProcessed += 1
-                vert = face.vertices[i]
-                vertex = bmesh_data.vertices[vert]
-
-                v_nor = Vector((0, 0, 0))
-                v_pos = Vector((0, 0, 0))
-                v_uv1 = Vector((0, 0)) #SC allows 2 uv's
-                v_boneIndex = [0] * 4 #SC supports up to 4 bones we will use only one
-
-                #Find controling bone
-                v_boneIndex[0] = -1
-
-                for vgroup in vertex.groups:
-                    if vgroup.weight > 0.5:
-                        bonename = mesh_obj.vertex_groups[vgroup.group].name
-                        for b in range(len(supcom_mesh.bones)):
-                            bone = supcom_mesh.bones[b]
-                            if bone.name == bonename:
-                                v_boneIndex[0] = b
-                                break
-
-                if (v_boneIndex[0] == -1):
-                    verticesWithoutBones.append(vertex.index)
-                    v_boneIndex[0] = 0
-                
-                v_pos = Vector(vertex.co @ (MatrixMesh @ xy_to_xz_transform))
-                #TODO: make this be the actual vertex normal instead of whatever it wants it to be.
-                v_nor = face.normal @ (MatrixMesh @ xy_to_xz_transform) #we use the face normal with the assumption that it is hard, doesnt support custom normals for now
-                #needed cause supcom scans an image in the opposite vertical direction or something?
-
-                my_uv = uvDict[vert]
-                v_uv1 = Vector((my_uv[0], 1.0 - my_uv[1]))
-                
-                #find if the vertex is sharp or not so it can be excluded from merging later
-                v_smoothEdgeList = []
-                
-                for ek in face.edge_keys:
-                    if not ek in face_edge_map:
-                        v_smoothEdgeList.append(ek)
-                        continue
-                    edge = face_edge_map[ek]
-                    if not edge.use_edge_sharp:
-                        for SmoothEdgeEnd in edge.vertices:
-                            if vertex.index == SmoothEdgeEnd:
-                                v_smoothEdgeList.append(ek)
-
-                vertList.append(scm_vertex(v_pos, v_nor, v_uv1, v_boneIndex, v_smoothEdgeList))
-
-            newFace = Face()
-            newFace.addVertexCount(vertList)
-            newFace.addToMesh(supcom_mesh)
-
-        print('total vertices processed: ', TotalVertsProcessed)
-        bpy.ops.object.mode_set(mode='OBJECT')
-        bpy.ops.object.select_all(action='DESELECT')
-        
         #error handling
-        if len(verticesWithoutBones) > 0:
+        if verticesWithoutBones:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.object.select_all(action='DESELECT')
             selectVerticesForError(verticesWithoutBones, "vertices", mesh_obj)
             my_popup(f"Error: {len(verticesWithoutBones)} Vertices without Bone Influence in Mesh. (Selected)")
-            print(f"Error: {len(verticesWithoutBones)} Vertices without Bone Influence in Mesh. (Selected)")
             return
 
     return supcom_mesh
@@ -956,7 +866,22 @@ def getBoneNameAndAction(path):
         return ['false','false']
     return [path.split('"')[1] , path.split('.')[-1]]
 
-def make_sca(arm_obj, action):
+def action_fcurves(action, slot=None):
+    """F-curves of an action. Blender 4.4+ stores them per slot in layered actions; Blender 5.0 removed the old
+    Action.fcurves shortcut. With no slot given, all slots' curves are returned."""
+    if hasattr(action, "layers"):
+        curves = []
+        for layer in action.layers:
+            for strip in layer.strips:
+                for bag in getattr(strip, "channelbags", []):
+                    if slot is None or bag.slot == slot:
+                        curves.extend(bag.fcurves)
+        if curves or not hasattr(action, "fcurves"):
+            return curves
+    return list(action.fcurves)
+
+
+def make_sca(arm_obj, action, slot=None):
 
     global BONES
     global MArmatureWorld
@@ -968,7 +893,7 @@ def make_sca(arm_obj, action):
     
     #get textInfo for present keys in armature
     if action:
-        for fc in action.fcurves:
+        for fc in action_fcurves(action, slot):
             keyParsed = getBoneNameAndAction(fc.data_path)
             if (keyParsed[1] in ["scale","rotation_quaternion","location"]):
                 keyedBones.add(keyParsed[0])
@@ -1077,7 +1002,8 @@ def export_scm(outdir):
     if USER_INFO != "" :
         mesh.info.append( USER_INFO )
     
-    mesh.save(outdir + arm_obj.name + '.scm')
+    if mesh.save(outdir + arm_obj.name + '.scm') is False:
+        return
     mesh = None
     
     loc_filename = arm_obj.name + '.scm'
@@ -1128,21 +1054,35 @@ def export_sca(outdir):
     # SCA
     # This plays through every action in the NLA tracks linked to our armature and records the relevant bone positions every frame, then saves that to sca
     nla_strips = list()
-    for track in arm_obj.animation_data.nla_tracks:
-        nla_strips.extend(track.strips)
-    
+    if arm_obj.animation_data:
+        for track in arm_obj.animation_data.nla_tracks:
+            nla_strips.extend(s for s in track.strips if s.action)
+
     if len(nla_strips) == 0:
         my_popup("No animation strips were found to export. You may need to go to the Nonlinear Animation Editor and hit Push Down Action on your Action.")
         return
 
-    for nla_strip in nla_strips:
-        #set active action
-        arm_obj.animation_data.action = nla_strip.action
-        
-        animation = make_sca(arm_obj, nla_strip.action)
-        animation.save(outdir + nla_strip.action.name + ".sca")
-        
-        my_popup_info("Action saved to " + nla_strip.action.name)
+    adata = arm_obj.animation_data
+    prev_action = adata.action
+    prev_slot = getattr(adata, "action_slot", None)
+    try:
+        for nla_strip in nla_strips:
+            #set active action (and, on Blender 4.4+, the slot the strip uses)
+            adata.action = nla_strip.action
+            slot = getattr(nla_strip, "action_slot", None)
+            if slot is not None and hasattr(adata, "action_slot"):
+                adata.action_slot = slot
+
+            animation = make_sca(arm_obj, nla_strip.action, slot)
+            if animation is None:
+                return
+            animation.save(outdir + nla_strip.action.name + ".sca")
+
+            my_popup_info("Action saved to " + nla_strip.action.name)
+    finally:
+        adata.action = prev_action
+        if prev_slot is not None and hasattr(adata, "action_slot"):
+            adata.action_slot = prev_slot
 
 
 

@@ -12,6 +12,14 @@
 #   0.5.1   2019-10-13 - Added support for importing files with more vertices
 #   0.5.2   2020-04-26 - Fixed the bone replacement dialogue not working for animations, and cleaned up a bit
 #   0.5.3   2020-05-29 - Added Vague support for SCM v7 which is supcom 2 format.
+#   0.6.0   2026-10-07 - Blender 5.x (tested on 5.2 LTS): removed the bgl import (module removed in Blender 5.0),
+#                        explicit little-endian struct formats (bone records used native 'l', 8 bytes off Windows),
+#                        popups fixed (label(text=)) and safe without a window, vertex slots labelled correctly
+#                        (position, NORMAL, tangent, binormal - verified on game files), imported meshes get the
+#                        file's own normals as custom normals, faster vertex-group assignment, armature name from
+#                        splitext (rstrip(".scm") ate trailing s/c/m letters), get_mesh_bones fixes.
+#                        Works when driven from scripts: mode switches get an explicit context and the mesh is
+#                        parented with an Armature modifier directly instead of through parent_set.
 #
 # Todo
 #   - Material/uv map 2
@@ -23,10 +31,10 @@
 #**************************************************************************************************
 
 bl_info = {
-    "name": "Supcom Importer 0.5.3",
-    "author": "dan & Brent & Oygron",
-    "version": (0,5,3),
-    "blender": (2, 80, 0),
+    "name": "Supcom Importer 0.6.0",
+    "author": "dan & Brent & Oygron, [e]Exotic_Retard; Blender 5 port 2026",
+    "version": (0,6,0),
+    "blender": (4, 2, 0),
     "location": "File > Import-Export",
     "description": "Imports Supcom files",
     "warning": "",
@@ -43,7 +51,7 @@ import bpy
 
 from mathutils import *
 
-from bgl import *
+# (bgl was imported here but never used; Blender 5.0 removed the module, which broke enabling the add-on)
 
 
 import os
@@ -100,15 +108,21 @@ xz_to_xy_transform = Matrix(([ 1, 0, 0],
 globMesh = []
 MArmatureWorld = Matrix()
 
-def my_popup(msg):
+def _popup(msg, title, icon):
+    print(title + ": " + msg)
+    # popups need a window; skip them when Blender runs without UI (background / command line)
+    wm = bpy.context.window_manager
+    if bpy.app.background or wm is None or not wm.windows:
+        return
     def draw(self, context):
-        self.layout.label(msg)
-    bpy.context.window_manager.popup_menu(draw, title="Error", icon='ERROR')
+        self.layout.label(text=msg)
+    wm.popup_menu(draw, title=title, icon=icon)
+
+def my_popup(msg):
+    _popup(msg, "Error", 'ERROR')
 
 def my_popup_warn(msg):
-    def draw(self, context):
-        self.layout.label(msg)
-    bpy.context.window_manager.popup_menu(draw, title="Warning", icon='ERROR')
+    _popup(msg, "Warning", 'ERROR')
 
 
 
@@ -205,7 +219,7 @@ class scm_bone :
 
     def load(self, file):
         #global xy_to_xz_transform
-        bonestruct = '16f3f4f4l'
+        bonestruct = '<16f3f4f4i'  # explicit 4-byte ints; native 'l' is 8 bytes outside Windows
         buffer = file.read(struct.calcsize(bonestruct))
         readout = struct.unpack(bonestruct, buffer)
 
@@ -278,15 +292,17 @@ class scm_vertex :
 
     def load(self, file):
 
-        vertstruct = '3f3f3f3f2f2f4B'
+        vertstruct = '<3f3f3f3f2f2f4B'
         vertsize = struct.calcsize(vertstruct)
 
         buffer = file.read(vertsize)
         vertex = struct.unpack(vertstruct, buffer)
 
+        # On-disk order is position, normal, tangent, binormal (checked against the game's own models: the slot
+        # after position lines up with the face normals; the exporter writes the same order).
         self.position = vertex[0:3]
-        self.tangent = vertex[3:6]
-        self.normal = vertex[6:9]
+        self.normal = vertex[3:6]
+        self.tangent = vertex[6:9]
         self.binormal = vertex[9:12]
         self.uv1 = vertex[12:14]
         self.uv2 = vertex[14:16]
@@ -324,8 +340,7 @@ class scm_mesh :
         scm = open(filename, 'rb')
 
         # Read header
-        #headerstruct = '4s11L'
-        headerstruct = '4s11I'
+        headerstruct = '<4s11I'
         buffer = scm.read(struct.calcsize(headerstruct))
         header = struct.unpack(headerstruct, buffer)
 
@@ -409,7 +424,7 @@ class scm_mesh :
         # Not implemented in Sup Com 1.0!
 
         # Read indices (triangles)
-        tristruct = '3h'
+        tristruct = '<3h'
         trisize = struct.calcsize(tristruct)
 
         scm.seek(indexoffset, 0)
@@ -493,13 +508,13 @@ class sca_frame:
         self.anim = anim
 
     def load(self, file,bonenames):
-        frameheader_fmt = 'fi'
+        frameheader_fmt = '<fi'
         frameheader_size = struct.calcsize(frameheader_fmt)
         buffer = file.read(frameheader_size)
 
         (self.keytime, self.keyflags) = struct.unpack(frameheader_fmt, buffer)
 
-        posrot_fmt = '3f4f'
+        posrot_fmt = '<3f4f'
         posrot_size = struct.calcsize(posrot_fmt)
 
         for b in range (0, self.anim.numbones) :
@@ -622,7 +637,7 @@ class sca_anim :
         sca = open(filename, 'rb')
 
         # Read header
-        headerstruct = '4siifiiiii'
+        headerstruct = '<4siifiiiii'
         buffer = sca.read(struct.calcsize(headerstruct))
         header = struct.unpack(headerstruct, buffer)
         print('header', header)
@@ -653,13 +668,13 @@ class sca_anim :
 
 
         # Read links
-        links_fmt = str(self.numbones)+'i'
+        links_fmt = '<' + str(self.numbones)+'i'
         links_size = struct.calcsize(links_fmt)
 
         buffer = sca.read(links_size)
         self.bonelinks = struct.unpack(links_fmt, buffer)
 
-        posrot_fmt = '3f4f'
+        posrot_fmt = '<3f4f'
         posrot_size = struct.calcsize(posrot_fmt)
 
         sca.seek(animoffset)
@@ -720,7 +735,7 @@ def read_scm() :
 
     #ProgBarLSCM = ProgressBar( "Imp: load SCM", (2*len(mesh.vertices) + len(mesh.faces)))
 
-    armature_name = scm_filepath[2].rstrip(".scm")
+    armature_name = os.path.splitext(scm_filepath[2])[0]  # rstrip(".scm") also stripped trailing s/c/m letters
     print( "armature ", armature_name)
 
     ###        CREATE ARMATURE
@@ -734,7 +749,12 @@ def read_scm() :
     #if not armObj.select_get():
     armObj.select_set(True)
 
-    bpy.ops.object.mode_set(mode='EDIT')
+    # explicit context: the operator otherwise depends on whatever the UI/script context happens to be
+    # (e.g. right after loading a file from a script there is no active object and mode_set fails)
+    edit_ctx = bpy.context.temp_override(active_object=armObj, object=armObj, selected_objects=[armObj],
+                                         selected_editable_objects=[armObj])
+    with edit_ctx:
+        bpy.ops.object.mode_set(mode='EDIT')
 
     for index in range(len(mesh.bones)):
         bone = mesh.bones[index]
@@ -753,7 +773,8 @@ def read_scm() :
         blender_bone.matrix = t_matrix.transposed()
 
 
-    bpy.ops.object.mode_set(mode='OBJECT')
+    with bpy.context.temp_override(active_object=armObj, object=armObj, edit_object=armObj, selected_objects=[armObj]):
+        bpy.ops.object.mode_set(mode='OBJECT')
     
     
     meshData = bpy.data.meshes.new('Mesh')
@@ -812,35 +833,41 @@ def read_scm() :
     
     meshData.update() #blender crashes when going into edit mode without these
 
-    #assigns vertex groups #mesh must be in object
+    # use the file's own vertex normals (SupCom stores hard edges as split vertices, so these reproduce the
+    # in-game shading exactly; without them Blender showed flat-shaded facets)
+    rot3 = xy_to_xz_transform.to_3x3()
+    normals = [(Vector(vert.normal) @ rot3).normalized() for vert in mesh.vertices]
+    if all(n.length > 0.5 for n in normals):
+        meshData.shade_smooth()
+        meshData.normals_split_custom_set_from_vertices(normals)
+
+    #assigns vertex groups (one bone per vertex, weight 1.0) - grouped by bone instead of bones x vertices
     for bone in mesh.bones:
         mesh_obj.vertex_groups.new(name=bone.name)
 
-
-    for vgroup in mesh_obj.vertex_groups:
-        #print(vgroup.name, ":", vgroup.index)
-        for vertex_index in range(len(mesh.vertices)):
-            #bone index
-            vertex = mesh.vertices[vertex_index]
-            bone_index = vertex.bone_index[0]
-            boneName = mesh.bones[bone_index].name
-            if boneName == vgroup.name:
-                vgroup.add([vertex_index], 1.0, 'ADD')
+    by_bone = {}
+    for vertex_index, vertex in enumerate(mesh.vertices):
+        by_bone.setdefault(vertex.bone_index[0], []).append(vertex_index)
+    for bone_index, vertex_indices in by_bone.items():
+        if bone_index < len(mesh.bones):
+            mesh_obj.vertex_groups[mesh.bones[bone_index].name].add(vertex_indices, 1.0, 'ADD')
 
     meshData.update() #blender crashes when going into edit mode without these
 
     bpy.context.view_layer.update()
 
 
-    bpy.ops.object.select_all(action='DESELECT')
+    # parent the mesh to the armature with an Armature modifier (what "Parent > With Armature Deform" does),
+    # set directly instead of through the operator so it works from any context
+    mesh_obj.parent = armObj
+    arm_mod = mesh_obj.modifiers.new(name="Armature", type='ARMATURE')
+    arm_mod.object = armObj
 
-    mesh_obj.select_set(False)
-    armObj.select_set(False)
-
+    for o in layer.objects:
+        o.select_set(False)
     mesh_obj.select_set(True)
     armObj.select_set(True)
     layer.objects.active = armObj
-    bpy.ops.object.parent_set(type="ARMATURE")
 
     if len(mesh.info):
         print( "=== INFO ===")
@@ -904,6 +931,7 @@ def iterate_bones(meshBones, bone, parent = None, scm_parent_index = -1):
             iterate_bones( meshBones, child, bone, b_index )
 
 def get_mesh_bones():
+    global MArmatureWorld  # was assigned as a local before, so iterate_bones never saw the armature's matrix
     scene = bpy.context.scene
 
     # Get Selected object(s)
@@ -924,8 +952,8 @@ def get_mesh_bones():
                 break
 
     if arm_obj == None:
-        popup("Error: Please select your armature.%t|OK")
-        return
+        my_popup("Error: no armature found. Import the .scm first, or select its armature.")
+        return None
         
     MArmatureWorld = Matrix(arm_obj.matrix_world)
     
@@ -990,7 +1018,9 @@ def read_anim(mesh):
     anim.load(sca_filepath[0])
     
     meshBones = get_mesh_bones()
-    
+    if not meshBones:
+        return
+
     objBoneNames = [rBone.name for rBone in meshBones]
     return check_bone(meshBones,anim,objBoneNames,0)
     
@@ -1048,7 +1078,7 @@ def read_end_anim(meshBones,anim):
     print( arm_obj.name)
     arm_obj.animation_data_clear()
     arm_obj.animation_data_create()
-    action = bpy.data.actions.new(name=sca_filepath[2].rstrip(".sca"))
+    action = bpy.data.actions.new(name=os.path.splitext(sca_filepath[2])[0])
     arm_obj.animation_data.action = action
 
     pose = arm_obj.pose
