@@ -16,6 +16,9 @@ Both add-ons work on Blender 5.x (tested on 5.2 LTS). Install each .py with Edit
   slotted actions). Normals and tangents come from Blender itself (corner normals + MikkTSpace), so the game shows
   exactly what the viewport shows: smooth/flat shading, sharp edges and custom normals are all respected, and normal
   maps line up. Clear error past the format's 65535-vertex limit; warning if the armature has unapplied transforms.
+- Exporter: refuses meshes with more than 80 weighted bones. The game's mesh shader holds only 80 bone matrices
+  (effects/mesh.fx: `#define BONE_MAXIMUM 80`); a unit past that freezes the game the moment it appears.
+  Move small parts (muzzle tips, recoil slides) onto their parent bones to get under the limit.
 
 Checked by round-tripping models from the game files (import -> export -> compare with the original): on models
 authored by GPG, exported normals match the originals at 1.000 (mean dot product) on 8 of 9 models, against

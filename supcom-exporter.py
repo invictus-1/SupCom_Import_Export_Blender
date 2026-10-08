@@ -56,6 +56,7 @@
 #               explicit little-endian struct formats (bone records and header used native 'l'/'L', 8 bytes off Windows)
 #               popups safe without a window; clear error past the format's 65535-vertex limit
 #               SCA export reads keyed bones through slotted actions (Action.fcurves was removed in Blender 5.0)
+#               refuses meshes with more than 80 weighted bones (the game's mesh shader limit; such units hang the game)
 #
 #
 # Todo
@@ -305,6 +306,14 @@ class scm_mesh :
     def save(self, filename):
 
         print('Writing Mesh...')
+
+        # the game's mesh shader skins at most 80 bones (effects/mesh.fx: #define BONE_MAXIMUM 80); vertices bound to
+        # bones past that read outside the bone palette and hang the game when the unit appears
+        if self.weightedBoneCount > 80:
+            my_popup("Error: %d bones carry geometry (including their parents); Supreme Commander's mesh shader supports "
+                     "at most 80. Move geometry from small parts (muzzle tips, recoil slides) onto their parent bones."
+                     % self.weightedBoneCount)
+            return False
 
         # triangle indices are unsigned 16-bit in the SCM format
         if len(self.vertices) > 65535:
