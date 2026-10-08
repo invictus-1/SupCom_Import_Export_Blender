@@ -33,7 +33,7 @@
 bl_info = {
     "name": "Supcom Importer 0.6.0",
     "author": "dan & Brent & Oygron, [e]Exotic_Retard; Blender 5 port 2026",
-    "version": (0,6,0),
+    "version": (0,6,1),
     "blender": (4, 2, 0),
     "location": "File > Import-Export",
     "description": "Imports Supcom files",
@@ -785,6 +785,13 @@ def read_scm() :
     for vert in mesh.vertices:
         vertlist.append(Vector(vert.position)@xy_to_xz_transform)
 
+    # 0.6.1: drop degenerate triangles (a repeated vertex index). Some mod models have a few; the game ignores them,
+    # but in Blender they make invalid polygons and setting custom normals then crashes Blender.
+    dropped = len(mesh.faces)
+    mesh.faces = [f for f in mesh.faces if len(set(f[:3])) == 3]
+    dropped -= len(mesh.faces)
+    if dropped:
+        print('Dropped degenerate triangles:', dropped)
     meshData.calc_loop_triangles()
     
     meshData.vertices.add(len(vertlist))
@@ -831,6 +838,7 @@ def read_scm() :
     layer.objects.active = mesh_obj
     mesh_obj.select_set(True)
     
+    meshData.validate(clean_customdata=False)  # 0.6.1: never hand Blender an invalid mesh
     meshData.update() #blender crashes when going into edit mode without these
 
     # use the file's own vertex normals (SupCom stores hard edges as split vertices, so these reproduce the

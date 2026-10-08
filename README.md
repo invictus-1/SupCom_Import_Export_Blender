@@ -3,7 +3,7 @@ SupCom_Import_Export_Blender
 
 Python scripts to import and export Supreme Commander units (.scm) and animations (.sca) in Blender.
 
-Blender 5.x (version 0.6.0)
+Blender 5.x (version 0.6.1)
 ------
 
 Both add-ons work on Blender 5.x (tested on 5.2 LTS). Install each .py with Edit > Preferences > Add-ons >
@@ -19,6 +19,9 @@ Both add-ons work on Blender 5.x (tested on 5.2 LTS). Install each .py with Edit
 - Exporter: refuses meshes with more than 80 weighted bones. The game's mesh shader holds only 80 bone matrices
   (effects/mesh.fx: `#define BONE_MAXIMUM 80`); a unit past that freezes the game the moment it appears.
   Move small parts (muzzle tips, recoil slides) onto their parent bones to get under the limit.
+- Importer 0.6.1: models with degenerate triangles (a repeated vertex index; some mod models have a few) crashed
+  Blender while setting custom normals. They are now dropped on import (the game ignores them too) and the mesh is
+  validated before Blender uses it.
 
 Checked by round-tripping models from the game files (import -> export -> compare with the original): on models
 authored by GPG, exported normals match the originals at 1.000 (mean dot product) on 8 of 9 models, against
